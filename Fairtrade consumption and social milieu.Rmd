@@ -1,0 +1,353 @@
+---
+title: "Fairtrade consumption and social milieu"
+author: "Philipp D. P."
+date: "30.09.2020"
+output:
+  md_document:
+    variant: markdown_github
+---
+#### Data: Umweltbewusstsein in Deutschland 2016 (Welle 1) - Version 1.0.0 (12.04.2017)
+#### Data access: https://doi.org/10.4232/1.12764 (Gesis-Archiv - SPSS Data - SAV Format)
+#### R Version 4.0.2 (22.06.2020) - RStudio Version 1.3.1056
+<br> 
+
+#### Clear workspace
+```{r}
+rm(list = ls())
+```
+
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+Pakete <- c("tidyverse",     ## 1.3.0
+            "naniar",        ## 0.5.0
+            "haven",         ## 2.2.0
+            "survey",        ## 3.37
+            "car",           ## 3.0-6
+            "gmodels",       ## 2.18.1
+            "psych",         ## 1.9.12.31
+            "mfx",           ## 1.2-2
+            "epiDisplay",    ## 3.5.0.1
+            "effects",       ## 4.1-4
+            "DescTools",     ## 0.99.37
+            "margins"        ## 0.3.23
+            )
+
+lapply(Pakete, require, character.only = T)
+```
+
+#### Load packages
+```{r eval=F, message=FALSE}
+Pakete <- c("tidyverse",     ## 1.3.0
+            "naniar",        ## 0.5.0
+            "haven",         ## 2.2.0
+            "survey",        ## 3.37
+            "car",           ## 3.0-6
+            "gmodels",       ## 2.18.1
+            "psych",         ## 1.9.12.31
+            "mfx",           ## 1.2-2
+            "epiDisplay",    ## 3.5.0.1
+            "effects",       ## 4.1-4
+            "DescTools",     ## 0.99.37
+            "margins"        ## 0.3.23
+            )
+
+lapply(Pakete, require, character.only = T)
+```
+
+
+### Data import and preparation (preparation of the analysis)
+
+#### Read in data set
+```{r}
+Data <- read_sav("Umweltbewusstsein_DE_2016_Welle1_v1-0-0.sav")
+```
+
+#### Create variable subset 
+```{r}
+Data <- Data %>%
+  dplyr::select(f624_3, ## If possible, only buy products that have been produced under fair working conditions.
+                f821,   ## gender (m = 1 / w = 2) 
+                f8210,  ## Total monthly net income of a household (in 11 income groups).
+                nf822,  ## Age of respondents in years.
+                f823,   ## Educational attainment (highest school degree or university degree). 
+                QCL_1,  ## Social milieus (six social segments, 17 items for identification).
+                weight  ## Weighting variable (weighting by region, gender, age and education).
+                )
+```
+
+#### Define missing data or unusable values as "NA"
+```{r}
+Data <- Data %>%
+  mutate(f624_3 = na_if(f624_3, 5), ## "don't know"
+         f8210  = na_if(f8210, 12), ## "not specified"
+         f823   = na_if(f823, 1),   ## "still student"
+         f823   = na_if(f823, 7),   ## "Other school diploma"
+         f823   = na_if(f823, 8)    ## "not specified"
+         )
+```
+
+###  Recode / dichotomize variables for analysis
+#### Dichotomize target variable purchase probability as new variable "buy"
+#### Recode categories 1 and 2 to 1 = Yes / categories 3 and 4 to 0 = No
+```{r}
+Data <- Data %>%
+  mutate(buy = car::recode(Data$f624_3,
+                            "1:2 = 1; 3:4 = 0; else = NA", as.factor = T))
+```
+
+#### Gender from m = 1 / w = 2 to m = 0 / w = 1
+#### New variable "female" (female = 1)
+```{r}
+Data$female <- dummy.code(Data$f821, group = 2)
+```
+
+#### Define milieu as factor variable and thus automatically create a dummy variable
+#### New variable "milieu" (milieu 1 automatically set as reference category)
+#### Means: The first milieu is included in the calculation with 0 and the other categories with 1 each.
+```{r}
+Data <- Data %>%
+  mutate(milieu = car::recode(Data$QCL_1,
+                            "1 = 1;
+                             2 = 2;
+                             3 = 3;
+                             4 = 4; 
+                             5 = 5;
+                             6 = 6", 
+                             as.factor = T))
+```
+
+#### Distribution of milieus rounded to one decimal place
+```{r}
+round(prop.table(table(Data$milieu))*100, digits = 1)
+```
+
+#### How exactly is the variable "milieu" structured as a factor. Important for later model interpretation.
+```{r}
+contrasts(Data$milieu)
+```
+
+#### Change reference category of milieu variable to 4 (preparation for logistic regression).
+```{r}
+Data$milieu <- relevel (Data$milieu, ref = "4")
+```
+
+#### Structure of the variable after changing the reference category
+#### Fourth milieu (precarious) set as reference and assigned value 0
+```{r}
+contrasts(Data$milieu)
+```
+
+#### Define education as factor variable and thus automatically create a dummy variable
+#### New variable "education" ("without degree" automatically set as reference category)
+```{r}
+Data$education <- factor(Data$f823)
+```
+
+#### Add age variable as "age" for clarity
+```{r}
+Data$age <- Data$nf822
+```
+
+#### Add income variable as "income" for clarity
+```{r}
+Data$income <- Data$f8210
+```
+
+#### Missing values analysis 
+
+```{r}
+summary(Data)
+```
+
+#### Visualization of missing values
+```{r, fig.width=10,fig.height=6}
+variables <-data.frame(Data$female, Data$education, Data$income, Data$age, Data$milieu, Data$buy)
+gg_miss_var(variables)
+```
+
+### Check application requirements of binary logistic regression.
+
+#### 1. No extreme unequal distribution of the dependent variable.
+```{r}
+prop.table(table(Data$buy))*100
+```
+
+```{r include=FALSE}
+## Regression vor Berechnung der vif-Werte, damit Berechnung möglich wird
+m6.w <- glm(buy ~ female + education + income + age + milieu,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m6.w)
+```
+
+#### 2. Sufficient cases in predictor variable categories associated with outcome variable.
+```{r}
+CrossTable(Data$milieu, Data$buy, prop.r=T, prop.c=F, prop.t=F, prop.chisq=F, digits = 2) 
+```
+
+#### 3. Low multicollinearity (Checked for overall model).
+#### variance inflation factor (VIF) (should not exceed 10).
+```{r}
+vif(m6.w)
+```
+
+### Binary logistic regression model
+
+#### Dependent variable: buy from Fairtrade Yes (1) / No (0)
+#### Independent variables: Gender, education, income, age, milieu
+#### Exclusion of cases with missing values ("na.action=na.omit" set as default)
+#### Models (each separately and at the end together in one model)
+#### Error message "non-integer #successes in a binomial glm!" comes up in each case.
+#### This is due to the weighting, since there are no integer values left
+#### The error message is therefore hidden in the following output 
+<br>
+
+#### Zero model (unweighted)
+```{r}
+m.null <- glm(buy ~ 1,
+              family = binomial,
+              data = Data)
+summary(m.null)
+```
+
+#### gender (weighted)
+```{r warning=FALSE}
+m1.w <- glm(buy ~ female,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m1.w)
+```
+
+#### education (weighted)
+```{r warning=FALSE}
+m2.w <- glm(buy ~ education,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m2.w)
+```
+
+#### income (weighted)
+```{r warning=FALSE}
+m3.w <- glm(buy ~ income,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m3.w)
+```
+
+#### age (weighted)
+```{r warning=FALSE}
+m4.w <- glm(buy ~ age,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m4.w)
+```
+
+#### milieu (weighted)
+```{r warning=FALSE}
+m5.w <- glm(buy ~ milieu,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m5.w)
+```
+
+#### Overall model (weighted) - socio-demographics as control variables.
+```{r warning=FALSE}
+m6.w <- glm(buy ~ female + education + income + age + milieu,
+            family = binomial,
+            data = Data,
+            weights = weight)
+summary(m6.w)
+```
+
+#### Model comparison and model quality
+#### Log-Likelihood
+```{r}
+logLik(m.null)
+logLik(m5.w) 
+logLik(m6.w)
+```
+
+#### Likelihood-Ratio-Test
+```{r}
+lrtest(m.null, m5.w)
+```
+
+#### AIC - Akaike Information Criterion
+```{r warning=FALSE}
+AIC(m.null, m5.w, m6.w)
+```
+
+
+#### BIC - Bayesian Information Criterion 
+```{r warning=FALSE}
+BIC(m.null, m5.w, m6.w)
+```
+
+#### Pseudo R2 (McKelvey & Zavoina)
+#### Directly in percent and rounded to one decimal place
+```{r echo=TRUE, warning=FALSE}
+round((PseudoR2(m1.w, "McKelveyZavoina")*100), digits = 1)   ## gender
+round((PseudoR2(m2.w, "McKelveyZavoina")*100), digits = 1)   ## education
+round((PseudoR2(m3.w, "McKelveyZavoina")*100), digits = 2)   ## income
+round((PseudoR2(m4.w, "McKelveyZavoina")*100), digits = 1)   ## age
+round((PseudoR2(m5.w, "McKelveyZavoina")*100), digits = 1)   ## milieu
+```
+
+#### Overall model - R2 (McKelvey & Zavoina)
+
+```{r warning=FALSE}
+round((PseudoR2(m6.w, "McKelveyZavoina")*100), digits = 1) ## Overall model 
+```
+
+#### Proportion of explained variance by milieu in total explained variance.
+```{r}
+round(11.9/21.2*100, digits = 1)
+```
+
+#### Advanced analysis of the models
+
+#### Odds Ratio
+```{r warning=FALSE}
+logistic.display(m5.w)
+logistic.display(m6.w)
+```
+
+#### AME (Average Marginal Effects)
+```{r}
+m5.w.marginal <- margins(m5.w)
+summary(m5.w.marginal)
+
+m6.w.marginal <- margins(m6.w) 
+summary(m6.w.marginal)
+```
+
+#### Visualization of the AME
+```{r, fig.width=10,fig.height=6}
+m5.w.marginal.sum <- summary(m5.w.marginal)
+
+ggplot(data = m5.w.marginal.sum) +
+  geom_point(aes(factor, AME)) +
+  geom_errorbar(aes(x = factor, ymin = lower, ymax = upper)) +
+  geom_hline(yintercept = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
+```{r, fig.width=10,fig.height=6}
+m6.w.marginal.sum <- summary(m6.w.marginal)
+
+ggplot(data = m6.w.marginal.sum) +
+  geom_point(aes(factor, AME)) +
+  geom_errorbar(aes(x = factor, ymin = lower, ymax = upper)) +
+  geom_hline(yintercept = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
