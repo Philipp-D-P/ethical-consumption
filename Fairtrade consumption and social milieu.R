@@ -8,7 +8,7 @@ rm(list = ls())
 
 ## ----setup, include=F----------------------------------------------------------
 knitr::opts_chunk$set(echo = TRUE)
-Pakete <- c("tidyverse",     ## 1.3.0
+Packages <- c("tidyverse",     ## 1.3.0
             "naniar",        ## 0.5.0
             "haven",         ## 2.2.0
             "survey",        ## 3.37
@@ -22,7 +22,7 @@ Pakete <- c("tidyverse",     ## 1.3.0
             "margins"        ## 0.3.23
             )
 
-lapply(Pakete, require, character.only = T)
+lapply(Packages, require, character.only = T)
 
 
 ## ----eval=F, message=FALSE-----------------------------------------------------
